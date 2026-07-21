@@ -172,6 +172,7 @@ rich-toolkit==0.20.3
 rignore==0.8.0
 rpds-py==2026.6.3
 safetensors==0.8.0
+scalar_fastapi==1.8.2
 scikit-learn==1.9.0
 scipy==1.18.0
 Send2Trash==2.1.0
