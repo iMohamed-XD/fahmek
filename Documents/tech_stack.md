@@ -1,70 +1,111 @@
-# RAG Application — Tech Stack
+# RAG Application — Tech Stack (Revised: Single Runtime)
 
 ## Overview
 
-Two-runtime architecture: Laravel handles the application/UI layer and owns
-schema migrations; FastAPI handles the RAG pipeline (chunking, embedding,
-retrieval) and writes only to `document_chunk`. Both connect to the same
-PostgreSQL database.
+Single-runtime architecture. FastAPI owns everything: auth, migrations,
+CRUD, RAG pipeline (chunking, embedding, retrieval), and async job
+dispatch. React + TypeScript is a pure client — it talks to FastAPI over
+REST and holds no server-side logic. Laravel is dropped entirely.
 
 ```
-┌─────────────┐         ┌──────────────────┐         ┌────────────┐
-│   Laravel   │  HTTP   │     FastAPI       │  SQL    │ PostgreSQL │
-│ (Blade UI)  │────────>│  (RAG service)    │────────>│ + pgvector │
-│             │<────────│                   │<────────│            │
-└──────┬──────┘  JSON   └───────────────────┘         └─────┬──────┘
-       │                                                     │
-       └─────────── writes user/document/chat/msg ───────────┘
+┌───────────────┐        REST/JSON        ┌───────────────────┐         ┌────────────┐
+│ React + TS    │ ──────────────────────> │      FastAPI        │  SQL    │ PostgreSQL │
+│ (Vite, RTL)   │ <────────────────────── │  (app + RAG service)│────────>│ + pgvector │
+└───────────────┘        JWT auth          └────────┬───────────┘         └─────┬──────┘
+                                                    │                            │
+                                            enqueue │                            │
+                                                    v                            │
+                                            ┌───────────────┐                    │
+                                            │  arq worker    │────────────────────┘
+                                            │ (embed jobs +  │
+                                            │  cron sweep)   │
+                                            └───────┬────────┘
+                                                    │
+                                            ┌───────v────────┐
+                                            │     Redis      │
+                                            └────────────────┘
 ```
 
-## 1. Application Layer — Laravel + Blade + Tailwind
+## 1. Application Layer — FastAPI
 
-- **Role**: auth, CRUD, document upload handling, chat UI, session management.
-- **Owns**: migrations for the full schema (`user`, `document`, `chat`, `msg`,
-  `chat_document`, `msg_chunk`, and the DDL for `document_chunk` — but not
-  writes to `document_chunk` itself).
-- Standard Eloquent relationships map directly onto the schema:
+- **Role**: auth, CRUD, document upload handling, chat endpoints, session
+  management, chunking, embedding, retrieval, prompt assembly, LLM calls.
+- **Owns**: everything. All migrations (`user`, `document`, `chat`, `msg`,
+  `chat_document`, `msg_chunk`, `document_chunk`), all writes, all client-facing
+  routes, `document.status` transitions.
+- ORM: **SQLAlchemy (async, via `asyncpg`)**. Migrations: **Alembic**.
+- No internal/external route split anymore — one route surface, all
+  protected by JWT where user-scoped, no service-token layer since there is
+  no second runtime to trust.
 
-```php
-// User model
-public function documents() { return $this->hasMany(Document::class); }
-public function chats() { return $this->hasMany(Chat::class); }
-
-// Chat model
-public function documents() {
-    return $this->belongsToMany(Document::class, 'chat_document');
-}
-public function msgs() { return $this->hasMany(Msg::class); }
+```python
+# models.py (SQLAlchemy, abridged)
+class Document(Base):
+    __tablename__ = "document"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    path: Mapped[str]
+    status: Mapped[str] = mapped_column(default="uploaded")
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"))
+    chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document")
 ```
 
-- `document_chunk`'s `vector(N)` column is created via a raw `DB::statement(...)`
-  migration since Eloquent doesn't natively model the pgvector type — but
-  Laravel still owns the DDL for versioning/rollback purposes.
+- `document_chunk.embedding`'s `vector(N)` column is still created via a raw
+  Alembic `op.execute(...)` migration since SQLAlchemy doesn't natively model
+  the pgvector type either — same rationale as before, different tool.
 
-## 2. RAG Layer — Python + FastAPI
+## 2. Auth — JWT
 
-- **Role**: chunking, embedding generation, similarity search, prompt
-  assembly, LLM calls.
-- **Owns**: all writes to `document_chunk` (content, embedding, metadata) and
-  drives `document.status` transitions (`uploaded → chunking → embedding →
-  indexed`/`failed`).
-- Connects via `asyncpg` (or similar raw driver) — runs no migrations of its
-  own, only reads/writes rows in tables Laravel created.
-- Exposes at minimum:
-  - `POST /embed` — chunk + embed a document, update status as it progresses.
-  - `POST /query` — given `{chat_id, message, scoped_document_ids}`, run the
-    `<=>` similarity search scoped by `chat_document`, assemble context, call
-    the LLM, return `{answer, source_chunk_ids}`.
-- Authenticates via an internal service token from Laravel — never
-  authenticates end users directly.
+- **Library**: hand-rolled with `python-jose` (token encode/decode) +
+  `passlib[bcrypt]` (password hashing). Chosen deliberately over
+  `fastapi-users` to learn the mechanics rather than depend on a framework
+  that hides them.
+- Access token issued on login, short-lived (e.g. 15–30 min); refresh token
+  strategy (rotating refresh token in an httpOnly cookie, or a longer-lived
+  JWT) — decide before building the login/refresh endpoints.
+- Protects all user-scoped routes via a FastAPI dependency
+  (`Depends(get_current_user)`), the direct replacement for `auth:sanctum`
+  middleware groups.
 
-## 3. Embedding Model — sentence-transformers (replaces FastText)
+## 3. Async Jobs — arq (replaces Laravel's queue)
 
-FastText produces static, subword-pooled word embeddings, not contextual
-passage embeddings — weak fit for semantic retrieval over 200–800 token
-chunks. Replaced with `sentence-transformers`, trained specifically for
-semantic passage similarity, which is what the pgvector `<=>` query in the
-schema depends on.
+- **Role**: durable, crash-recoverable execution of `embed_document`, plus a
+  cron job replacing the old `SweepStuckDocumentsJob` for documents stuck in
+  `chunking`/`embedding`.
+- **Why arq over Celery**: arq's job functions are `async def`, matching the
+  async SQLAlchemy/`asyncpg` stack directly — no sync/async bridging.
+  Operationally lighter for a single free-tier VM (worker + Redis, no beat
+  process, no Flower) at the job volume this app actually has.
+- Backing store: Redis (new dependency, not present in the old stack).
+
+```python
+# worker.py
+async def embed_document(ctx, document_id: int, path: str):
+    # chunk -> embed -> insert document_chunk rows -> update document.status
+    ...
+
+async def sweep_stuck_documents(ctx):
+    # status in (chunking, embedding) and updated_at < now() - 10min -> failed
+    ...
+
+class WorkerSettings:
+    functions = [embed_document]
+    cron_jobs = [cron(sweep_stuck_documents, minute=set(range(0, 60, 5)))]
+    redis_settings = RedisSettings(host="redis")
+```
+
+```python
+# route handler, replaces dispatch(new EmbedDocumentJob(...))
+@router.post("/documents")
+async def upload_document(...):
+    document = await create_document(..., status="uploaded")
+    await redis_pool.enqueue_job("embed_document", document.id, document.path)
+    return document
+```
+
+## 4. Embedding Model — sentence-transformers
+
+Unchanged from the two-runtime plan.
 
 **Model choice (pick one, fix `N` before writing the pgvector migration):**
 
@@ -75,50 +116,58 @@ schema depends on.
 | `intfloat/multilingual-e5-small` | 384 | Use if Arabic/multilingual content matters |
 | OpenAI `text-embedding-3-small` | 1536 | Higher quality, adds API cost + network latency per chunk |
 
-Default recommendation: `bge-small-en-v1.5` (or `multilingual-e5-small` if
-Arabic content is in scope) — local, free, no external API dependency,
-strong retrieval quality.
+Default recommendation: `multilingual-e5-small` given Arabic is in scope —
+local, free, no external API dependency.
 
-**Consequence for the schema**: `document_chunk.embedding` is `vector(384)`,
-not the `vector(1536)` used as a placeholder example in `rag_schema.md`.
+**Consequence for the schema**: `document_chunk.embedding` is `vector(384)`.
 Changing this later requires re-embedding the entire corpus and recreating
-the column — fix it before the first migration.
+the column — fix it before the first Alembic migration that creates the
+table.
 
-## 4. Database — PostgreSQL + pgvector
+## 5. Database — PostgreSQL + pgvector
+
+Unchanged.
 
 - Extension: `CREATE EXTENSION IF NOT EXISTS vector;` — run once, before the
   first migration creating `document_chunk`.
-- Index: `hnsw` preferred over `ivfflat` if chunk count is expected to exceed
-  ~100k (no row-count-dependent tuning parameter, better recall/latency at
-  query time).
+- Index: `hnsw`, cosine distance.
 
 ```sql
 CREATE INDEX ON document_chunk USING hnsw (embedding vector_cosine_ops);
 ```
 
-- Distance metric: cosine (`vector_cosine_ops`), matching what
-  `sentence-transformers` models are optimized for. Don't mix metrics between
-  index and query.
+## 6. Frontend — React + TypeScript
 
-## 5. Integration Contract
+- **Role**: all UI — auth screens, document library, upload, chat, status
+  polling/citations display.
+- Build tool: Vite. Styling: Tailwind CSS v4 (`@tailwindcss/vite`,
+  CSS-first `@theme {}` config), RTL-first (`dir="rtl"`,
+  `rtl:`/`ltr:` variants) — unchanged from prior setup.
+- Talks to FastAPI exclusively over REST/JSON; stores the JWT access token
+  in memory (not localStorage, to limit XSS exposure) and handles refresh
+  via the refresh-token flow.
+- No server-rendering, no Blade — this replaces Laravel's entire UI layer.
+
+## 7. Integration Contract (Revised)
 
 | Concern | Owner | Notes |
 |---|---|---|
-| Schema migrations | Laravel | Includes `document_chunk` DDL, not its writes |
-| `user`, `chat`, `msg`, `chat_document` writes | Laravel | Conversational/UI state |
-| `document_chunk` writes, `document.status` transitions | FastAPI | RAG pipeline internals |
-| `msg_chunk` (citation) writes | Laravel | Written after receiving `source_chunk_ids` from FastAPI's `/query` response |
-| Auth | Laravel | FastAPI trusts an internal service token, never authenticates end users directly |
-| Stuck `chunking`/`embedding` rows | Laravel (scheduled job) | Timeout/retry sweep for documents stuck mid-pipeline if FastAPI crashes |
+| Schema migrations | FastAPI (Alembic) | Includes `document_chunk` DDL |
+| All table writes | FastAPI | No cross-runtime split — one process owns the DB |
+| `document.status` transitions | FastAPI (arq worker) | `uploaded → chunking → embedding → indexed/failed` |
+| `msg_chunk` (citation) writes | FastAPI | Written in the same request that receives retrieval results — no HTTP round trip to itself |
+| Auth | FastAPI (JWT) | No service-token layer — there's no second runtime to authenticate |
+| Stuck `chunking`/`embedding` rows | FastAPI (arq cron) | Replaces Laravel's scheduled sweep job |
 
 ## Summary Table
 
 | Component | Technology |
 |---|---|
-| Backend / app layer | Laravel |
-| Frontend templating | Blade |
-| Styling | Tailwind CSS |
-| RAG service | Python + FastAPI |
-| Embedding model | sentence-transformers (`bge-small-en-v1.5` or `multilingual-e5-small`) |
-| Database | PostgreSQL |
-| Vector index | pgvector (HNSW, cosine distance) |
+| Backend / app / RAG layer | FastAPI (single runtime) |
+| ORM / migrations | SQLAlchemy (async) + Alembic |
+| Auth | JWT (`python-jose` + `passlib`) |
+| Async jobs | arq + Redis |
+| Frontend | React + TypeScript (Vite) |
+| Styling | Tailwind CSS v4 |
+| Embedding model | sentence-transformers (`multilingual-e5-small`) |
+| Database | PostgreSQL + pgvector (HNSW, cosine distance) |

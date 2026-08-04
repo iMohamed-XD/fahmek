@@ -1,100 +1,122 @@
-from fastapi import FastAPI, status, HTTPException
 from contextlib import asynccontextmanager
-from scalar_fastapi import get_scalar_api_reference
-from app.schemas import DocumentCreate, DocumentUpdate, DocumentRead
-from app.db.database import read_document, delete_document_sql, update_document, insert_document, read_documents, init_db
 from typing import Any
+
+from fastapi import FastAPI, HTTPException, status
+from scalar_fastapi import get_scalar_api_reference
+
+from app.db.database import DataBase
+from app.db.models import Document
+from app.db.session import sessionDep
+from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
+
+db: DataBase
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    global db
+    db = DataBase()
+    db.init_db()
     yield
 
+
 app = FastAPI(title="fahemak-rag", lifespan=lifespan)
+
 
 def check_field(field: str):
     allowed_fields = set(DocumentRead.model_fields.keys())
 
     if field not in allowed_fields:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Field does not exist"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Field does not exist"
         )
 
 
 def check_id_in_DB(id: int):
-    if read_document(id=id) is None:
+    if db.read_document(id=id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Given id = {id} is not found in our DataBase!!!",
         )
 
 
-@app.get("/documnets/{id}/{field}", status_code=status.HTTP_200_OK)
+@app.get("/documents/{id}/{field}", status_code=status.HTTP_200_OK)
 def get_document_field(field: str, id: int) -> dict[str, Any]:
     check_field(field=field)
     check_id_in_DB(id=id)
-    document: DocumentRead | None = read_document(id=id)
-    return {
-        field: getattr(document, field)
-    }
+    document: DocumentRead | None = db.read_document(id=id)
+    return {field: getattr(document, field)}
 
 
 @app.get("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
-def get_documents(id: int | None = None):
-    document: DocumentRead | None = read_document(id=id)
+def get_documents(session: sessionDep, id: int | None = None) -> DocumentRead | None:
+    document: Document | None = session.get(Document, id)
     if document is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail= f"Said id = {id} is not found in our Database"
+            detail=f"Said id = {id} is not found in our Database",
         )
-    return document
+    return DocumentRead.model_validate(document)
 
 
 @app.post("/documents", status_code=status.HTTP_201_CREATED)
-def add_document(data: DocumentCreate) -> dict[str, str]:
-    insert_document(**data.model_dump())
+def add_document(data: DocumentCreate, session: sessionDep) -> dict[str, Any]:
+    new_document = Document(**data.model_dump())
+    session.add(new_document)
+    session.commit()
+    session.refresh(new_document)
+    id = new_document.id
     return {
-        "details": f"Given document ({data.name}) has been created successfully!!",
+        "details": f"Given document ({new_document.name}) has been created successfully!!",
+        "id": id,
     }
 
 
 @app.put("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
-def edit_document(id: int, data: DocumentRead) -> DocumentRead | None:
+def edit_document(
+    id: int, data: DocumentRead, session: sessionDep
+) -> DocumentRead | None:
     check_id_in_DB(id=id)
-    update_document(
-        id=id,
-        **data.model_dump(exclude={"id"})
-    )
-    document: DocumentRead | None = read_document(id=id)
-    return document
+    new_document = session.get(Document, id)
+    if new_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Given id = {id} is not found in our DataBase!!!",
+        )
+    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True))
+    session.add(new_document)
+    session.commit()
+    session.refresh(new_document)
+    return DocumentRead.model_validate(new_document)
 
 
 @app.patch("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
-def patch_document(id: int, data: DocumentUpdate) -> DocumentRead | None:
+def patch_document(
+    id: int, data: DocumentUpdate, session: sessionDep
+) -> DocumentRead | None:
     check_id_in_DB(id)
-    update_document(
-        id=id,
-        **data.model_dump(exclude_unset=True)
-    )
-    document: DocumentRead | None = read_document(id=id)
-    return document
+    new_document = session.get(Document, id)
+    if new_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Given id = {id} is not found in our DataBase!!!",
+        )
+    session.add(new_document)
+    session.commit()
+    session.refresh(new_document)
+    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True))
+    return DocumentRead.model_validate(new_document)
 
 
 @app.delete("/documents", status_code=status.HTTP_200_OK)
-def delete_document(id: int) -> dict[str, str]:
+def delete_document(id: int, session: sessionDep) -> dict[str, str]:
     check_id_in_DB(id=id)
-    document: DocumentRead | None = read_document(id=id)
+    document: DocumentRead | None = db.read_document(id=id)
     if document is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Given id = {id} is not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Given id = {id} is not found")
     name = document.name
-    delete_document_sql(id=id)
-    return {
-        "details": f"the Document : {name} has been deleted successfully!!"
-    }
+    db.delete_document_sql(id=id)
+    return {"details": f"the Document : {name} has been deleted successfully!!"}
 
 
 @app.get("/scalar", include_in_schema=False)

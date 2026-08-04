@@ -1,223 +1,226 @@
-# RAG Application — Routing Logic
+# RAG Application — Routing Logic (Revised: Single Runtime)
 
-Two route surfaces, matching the two-runtime split:
-
-1. **Laravel routes** — client-facing (browser/mobile hits these). Owns auth, CRUD, orchestration.
-2. **FastAPI routes** — internal only, never hit by the client directly. Laravel calls these server-to-server.
-
-Client never talks to FastAPI. This matters because it's the only place `document_chunk` writes and `document.status` transitions happen, and FastAPI "never authenticates end users directly" per your contract — so there's no route in FastAPI that accepts a user session/token, only a service token.
-
----
-
-## 1. Laravel Routes — `routes/api.php`
-
-```php
-Route::middleware('auth:sanctum')->group(function () {
-
-    // Documents — user's library
-    Route::post   ('/documents',                 [DocumentController::class, 'store']);   // upload -> status=uploaded, dispatch EmbedDocumentJob
-    Route::get    ('/documents',                  [DocumentController::class, 'index']);
-    Route::get    ('/documents/{document}',       [DocumentController::class, 'show']);
-    Route::get    ('/documents/{document}/status',[DocumentController::class, 'status']);  // poll target, reads document.status
-    Route::delete ('/documents/{document}',       [DocumentController::class, 'destroy']);
-
-    // Chats
-    Route::post   ('/chats',                              [ChatController::class, 'store']);
-    Route::get    ('/chats',                               [ChatController::class, 'index']);
-    Route::get    ('/chats/{chat}',                        [ChatController::class, 'show']);
-    Route::post   ('/chats/{chat}/documents',              [ChatController::class, 'attach']);   // writes chat_document
-    Route::delete ('/chats/{chat}/documents/{document}',   [ChatController::class, 'detach']);
-
-    // Messages — this is the route that calls FastAPI /query
-    Route::post   ('/chats/{chat}/messages', [MsgController::class, 'store']);
-    Route::get    ('/chats/{chat}/messages', [MsgController::class, 'index']);
-});
-```
-
-**No route exists for writing `document_chunk` or setting `document.status` from Laravel's client-facing side** — that would violate the ownership boundary in your contract. Laravel only reads `document.status` (for the poll endpoint) and only writes it implicitly never — FastAPI does that directly against the DB, not through a Laravel route.
+One route surface now — FastAPI serves the client (React/TS) directly.
+The old Laravel-facing/FastAPI-internal split, and the service-token trust
+boundary that existed only because two runtimes had to authenticate each
+other, are both gone. Every route below is a normal FastAPI route; the only
+distinction left is which ones require a logged-in user (JWT) versus none
+(health check).
 
 ---
 
-## 2. FastAPI Routes — internal, service-token gated
+## 1. Routes — `app/routers/`
 
 ```python
-# main.py / router
+# routers/documents.py
+router = APIRouter(prefix="/documents", tags=["documents"])
 
-@router.post("/embed")
-async def embed_document(
-    payload: EmbedRequest,          # { document_id, path }
-    _: None = Depends(verify_service_token),
+@router.post("", status_code=201)
+async def upload_document(
+    file: UploadFile,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: ArqRedis = Depends(get_redis_pool),
 ):
-    # transitions document.status: uploaded -> chunking -> embedding -> indexed | failed
+    document = await create_document(db, user_id=user.id, ..., status="uploaded")
+    await redis.enqueue_job("embed_document", document.id, document.path)
+    return document
+
+@router.get("")
+async def list_documents(user: User = Depends(get_current_user), db=Depends(get_db)):
+    return await get_documents_for_user(db, user.id)
+
+@router.get("/{document_id}")
+async def get_document(document_id: int, user=Depends(get_current_user), db=Depends(get_db)):
     ...
 
-@router.post("/query")
-async def query(
-    payload: QueryRequest,          # { chat_id, message, scoped_document_ids }
-    _: None = Depends(verify_service_token),
-) -> QueryResponse:                 # { answer, source_chunk_ids }
+@router.get("/{document_id}/status")
+async def get_document_status(document_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+    # poll target, reads document.status — same purpose as before
     ...
 
+@router.delete("/{document_id}")
+async def delete_document(document_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+```
+
+```python
+# routers/chats.py
+router = APIRouter(prefix="/chats", tags=["chats"])
+
+@router.post("")
+async def create_chat(user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+
+@router.get("")
+async def list_chats(user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+
+@router.get("/{chat_id}")
+async def get_chat(chat_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+
+@router.post("/{chat_id}/documents")
+async def attach_document(chat_id: int, payload: AttachDocumentRequest, user=Depends(get_current_user), db=Depends(get_db)):
+    # writes chat_document
+    ...
+
+@router.delete("/{chat_id}/documents/{document_id}")
+async def detach_document(chat_id: int, document_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+
+@router.post("/{chat_id}/messages", status_code=201)
+async def send_message(
+    chat_id: int,
+    payload: SendMessageRequest,   # { content }
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user_msg = await create_msg(db, chat_id=chat_id, sender="user", content=payload.content)
+
+    scoped_document_ids = await get_scoped_document_ids(db, chat_id)
+
+    # in-process now, not an HTTP call to another runtime
+    answer, source_chunks = await run_query(
+        db, chat_id=chat_id, message=user_msg.content, scoped_document_ids=scoped_document_ids
+    )
+
+    assistant_msg = await create_msg(db, chat_id=chat_id, sender="assistant", content=answer)
+
+    for chunk_id, similarity_score in source_chunks:
+        await create_msg_chunk(db, msg_id=assistant_msg.id, chunk_id=chunk_id, similarity_score=similarity_score)
+
+    return assistant_msg
+
+@router.get("/{chat_id}/messages")
+async def list_messages(chat_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+    ...
+```
+
+```python
+# routers/auth.py — new, didn't exist on the FastAPI side before
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+@router.post("/register")
+async def register(payload: RegisterRequest, db=Depends(get_db)):
+    ...
+
+@router.post("/login")
+async def login(payload: LoginRequest, db=Depends(get_db)):
+    # verify password (passlib), issue access + refresh JWT
+    ...
+
+@router.post("/refresh")
+async def refresh(payload: RefreshRequest):
+    ...
+```
+
+```python
 @router.get("/health")
 async def health():
     return {"status": "ok"}
 ```
 
-```python
-# auth dependency — internal service token, not a user credential
-async def verify_service_token(x_service_token: str = Header(...)):
-    if not hmac.compare_digest(x_service_token, settings.INTERNAL_SERVICE_TOKEN):
-        raise HTTPException(status_code=401, detail="invalid service token")
-```
-
-`/embed` and `/query` are the only two endpoints your contract requires. Both reject anything without `X-Service-Token` — there is no user-identity concept on the FastAPI side at all, by design.
+**What's gone**: no `X-Service-Token` header, no `verify_service_token`
+dependency, no distinction between "client-facing" and "internal" routers.
+`get_current_user` (JWT dependency) is the only auth gate, and it's absent
+only from `/auth/*` and `/health`.
 
 ---
 
-## 3. Flow A — Document Upload → Indexing
+## 2. Flow A — Document Upload → Indexing
 
 ```
-Client          Laravel                          FastAPI              Postgres
-  │  POST /documents │                                │                    │
-  │──────────────────>│ store file, INSERT document      │                    │
-  │                   │   status='uploaded'  ────────────────────────────────>│
-  │<── 201, document ─│                                │                    │
-  │                   │ dispatch(EmbedDocumentJob) [queued, async]           │
-  │                   │───── POST /embed {document_id, path} ───────────────>│
-  │                   │                                │ UPDATE status=chunking ─>│
-  │                   │                                │ UPDATE status=embedding ─>│
-  │                   │                                │ INSERT document_chunk(s) ─>│
-  │                   │                                │ UPDATE status=indexed | failed ─>│
-  │                   │<──────── 200 OK ───────────────│                    │
-  │  GET /documents/{id}/status (poll)                 │                    │
+Client              FastAPI                         arq worker           Postgres
+  │ POST /documents  │                                                        │
+  │──────────────────>│ INSERT document (status='uploaded') ────────────────>│
+  │                   │ enqueue_job('embed_document', id, path)               │
+  │<── 201, document ─│                                                        │
+  │                   │                    ┌──── picks up job ────┐          │
+  │                   │                    │ UPDATE status=chunking ────────>│
+  │                   │                    │ UPDATE status=embedding ───────>│
+  │                   │                    │ INSERT document_chunk(s) ──────>│
+  │                   │                    │ UPDATE status=indexed|failed ──>│
+  │ GET /documents/{id}/status (poll)      └───────────────────────┘          │
   │──────────────────>│ SELECT status ─────────────────────────────────────>│
-  │<── {status} ──────│                                │                    │
+  │<── {status} ──────│                                                        │
 ```
 
-**Why `/embed` is dispatched as a queued job, not a synchronous call in the request cycle**: chunking + embedding a document is not bounded in time — synchronous invocation ties up the HTTP worker and risks client-side timeouts. The Laravel route returns `201` immediately after the `document` row exists; the frontend polls `/status` (or you add a broadcast/websocket event on transition, if you want push instead of poll — not required by the current contract).
-
-```php
-// app/Jobs/EmbedDocumentJob.php
-class EmbedDocumentJob implements ShouldQueue
-{
-    public function __construct(private Document $document) {}
-
-    public function handle(): void
-    {
-        Http::withHeaders(['X-Service-Token' => config('services.rag.token')])
-            ->post(config('services.rag.url') . '/embed', [
-                'document_id' => $this->document->id,
-                'path'        => $this->document->path,
-            ])
-            ->throw(); // let queue retry policy handle failure
-    }
-}
-```
+The reasoning for async dispatch is unchanged — chunking + embedding isn't
+bounded in time, so it shouldn't hold an HTTP worker. Only the mechanism
+changed: `redis.enqueue_job(...)` replaces `dispatch(new EmbedDocumentJob)`.
 
 ---
 
-## 4. Flow B — Chat Message → Answer
+## 3. Flow B — Chat Message → Answer
 
 ```
-Client          Laravel                          FastAPI              Postgres
-  │ POST /chats/{id}/messages {content}               │                    │
+Client              FastAPI                                              Postgres
+  │ POST /chats/{id}/messages {content}                                     │
   │──────────────────>│ INSERT msg (sender='user') ───────────────────────>│
   │                   │ SELECT document_id FROM chat_document ─────────────>│
-  │                   │───── POST /query {chat_id, message, scoped_document_ids} ─>│
-  │                   │                                │ SELECT ... <=> ORDER BY distance LIMIT k
-  │                   │                                │        WHERE document_id = ANY(scoped_document_ids)
-  │                   │                                │ (LLM call, assemble context)
-  │                   │<── {answer, source_chunk_ids} ─│                    │
+  │                   │ SELECT ... <=> ORDER BY distance LIMIT k             │
+  │                   │        WHERE document_id = ANY(scoped_document_ids) │
+  │                   │ (LLM call, assemble context) — in-process, no       │
+  │                   │  second-runtime round trip                          │
   │                   │ INSERT msg (sender='assistant', content=answer) ───>│
-  │                   │ INSERT msg_chunk (msg_id, chunk_id, similarity) ────>│  [one row per source_chunk_id]
-  │<── 201, msg ──────│                                │                    │
+  │                   │ INSERT msg_chunk (msg_id, chunk_id, similarity) ────>│
+  │<── 201, msg ──────│                                                        │
 ```
 
-This one **is** synchronous in the request cycle — the client is waiting for an answer, so `MsgController@store` calls FastAPI inline (or via a short-lived queued job + polling/websocket if you want to avoid holding the HTTP connection open through the LLM call latency; either is valid, but the contract's `/query` shape assumes a request/response round trip, not a webhook).
-
-```php
-// app/Http/Controllers/MsgController.php (store, abridged)
-public function store(Request $request, Chat $chat)
-{
-    $userMsg = $chat->msgs()->create([
-        'sender'  => 'user',
-        'content' => $request->input('content'),
-        'date'    => now(),
-    ]);
-
-    $scopedDocumentIds = $chat->documents()->pluck('document.id');
-
-    $response = Http::withHeaders(['X-Service-Token' => config('services.rag.token')])
-        ->post(config('services.rag.url') . '/query', [
-            'chat_id'             => $chat->id,
-            'message'             => $userMsg->content,
-            'scoped_document_ids' => $scopedDocumentIds,
-        ])
-        ->throw()
-        ->json();
-
-    $assistantMsg = $chat->msgs()->create([
-        'sender'  => 'assistant',
-        'content' => $response['answer'],
-        'date'    => now(),
-    ]);
-
-    foreach ($response['source_chunk_ids'] as $chunkId) {
-        DB::table('msg_chunk')->insert([
-            'msg_id'   => $assistantMsg->id,
-            'chunk_id' => $chunkId,
-            // similarity_score only if /query returns it per chunk
-        ]);
-    }
-
-    return response()->json($assistantMsg->load('sourceChunks'), 201);
-}
-```
-
-Note: `msg_chunk` writes happen in Laravel, not FastAPI — matches your contract's "written after receiving `source_chunk_ids`" note. If you want `similarity_score` populated (schema allows it), `/query`'s response needs to return `{chunk_id, similarity_score}` pairs, not bare IDs — decide this before locking the response schema.
+This stays synchronous in the request cycle for the same reason as before —
+the client is waiting on an answer. The only change is that retrieval,
+generation, and the `msg_chunk` write all happen as function calls inside
+one process instead of an HTTP call to a second runtime followed by a
+response parse. This removes an entire failure class (network errors
+between Laravel and FastAPI, response-shape mismatches on
+`source_chunk_ids`) — the `/query` response-contract question
+(`source_chunk_ids` vs. `{chunk_id, similarity_score}` pairs) is now moot
+since there's no serialization boundary between retrieval and the
+`msg_chunk` write; pass the tuple directly.
 
 ---
 
-## 5. Recovery Route — Stuck Pipeline Sweep
+## 4. Recovery — Stuck Pipeline Sweep
 
-Not a client-facing route; a scheduled job on the Laravel side per your contract ("Stuck `chunking`/`embedding` rows → Laravel scheduled job").
+Replaces the Laravel scheduled job with an arq cron job — same trigger
+condition, runs inside the same worker process that executes `embed_document`.
 
-```php
-// app/Console/Kernel.php
-protected function schedule(Schedule $schedule): void
-{
-    $schedule->job(new SweepStuckDocumentsJob)->everyFiveMinutes();
-}
+```python
+async def sweep_stuck_documents(ctx):
+    async with get_db_session() as db:
+        stuck = await get_documents_with_status_older_than(
+            db, statuses=["chunking", "embedding"], older_than_minutes=10
+        )
+        for doc in stuck:
+            await update_document_status(db, doc.id, status="failed")
+            # optionally: await ctx["redis"].enqueue_job("embed_document", doc.id, doc.path)
 
-// app/Jobs/SweepStuckDocumentsJob.php
-public function handle(): void
-{
-    Document::whereIn('status', ['chunking', 'embedding'])
-        ->where('updated_at', '<', now()->subMinutes(10))
-        ->get()
-        ->each(function (Document $doc) {
-            $doc->update(['status' => 'failed']);
-            // optionally: dispatch(new EmbedDocumentJob($doc)); for one retry
-        });
-}
+class WorkerSettings:
+    functions = [embed_document]
+    cron_jobs = [cron(sweep_stuck_documents, minute=set(range(0, 60, 5)))]
 ```
-
-This exists because FastAPI can crash mid-pipeline and there's no other mechanism watching `document.status` for staleness — Laravel owns the schema and the scheduler, so it owns the timeout sweep.
 
 ---
 
-## 6. Route Ownership Summary
+## 5. Route Ownership Summary
 
-| Route | Runtime | Caller | Writes |
-|---|---|---|---|
-| `POST /documents` | Laravel | Client | `document` (status=uploaded) |
-| `GET /documents/{id}/status` | Laravel | Client (poll) | none (read) |
-| `POST /chats/{id}/messages` | Laravel | Client | `msg` (user), `msg` (assistant), `msg_chunk` |
-| `POST /embed` | FastAPI | Laravel (queued job) | `document_chunk`, `document.status` |
-| `POST /query` | FastAPI | Laravel (sync, inline) | none (read-only + LLM call) |
-| Sweep job | Laravel (cron) | — | `document.status` (failed) |
+| Route | Auth | Writes |
+|---|---|---|
+| `POST /auth/register`, `/auth/login`, `/auth/refresh` | none | `user` |
+| `POST /documents` | JWT | `document` (status=uploaded), enqueues `embed_document` |
+| `GET /documents/{id}/status` | JWT | none (read) |
+| `POST /chats/{id}/messages` | JWT | `msg` (user), `msg` (assistant), `msg_chunk` |
+| `embed_document` (arq job) | service-internal (not an HTTP route) | `document_chunk`, `document.status` |
+| `sweep_stuck_documents` (arq cron) | service-internal | `document.status` (failed) |
 
-Two invariants worth keeping in mind as you implement:
+Two invariants carried over unchanged:
 
-- **`/embed` is async, `/query` is sync** — different failure modes. `/embed` failures should retry via queue backoff; `/query` failures should surface to the client immediately (don't silently retry an LLM call that costs money and time on every failure).
-- **Nothing in Laravel writes `document_chunk` directly**, even for corrections — if you ever need to edit chunk content, that write still has to go through FastAPI so the embedding gets regenerated (per the "failure mode to watch" note in your schema doc). Don't add a Laravel route that touches that table.
+- **`embed_document` is async (queued), the chat-message flow is sync** —
+  same reasoning as before, just a different queue mechanism.
+- **Only `embed_document` writes `document_chunk`.** Route handlers still
+  must not touch that table directly, even now that there's no cross-runtime
+  boundary enforcing it structurally — re-embedding on edit is still the
+  rule, just enforced by convention/code review instead of a process
+  boundary. Worth a comment in the model or a DB-level check if you want it
+  enforced more strictly than "don't do that."

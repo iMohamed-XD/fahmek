@@ -1,4 +1,13 @@
-# RAG Application — Data Model (Revised)
+# RAG Application — Data Model (Revised: Single Runtime)
+
+> **Ownership note (updated)**: the two-runtime split (Laravel owns
+> migrations, FastAPI owns `document_chunk` writes) no longer applies.
+> FastAPI owns the entire schema — all migrations (via Alembic) and all
+> writes, including `document_chunk`. The internal rule that *only the
+> embed pipeline writes `document_chunk`* still holds, but it's now an
+> in-process convention (only call from `embed_document`/the retrieval
+> path, never from a route handler directly) rather than something
+> structurally enforced by a runtime boundary. See `routing_logic.md` §5.
 
 ## Models
 
@@ -63,43 +72,70 @@ chat            m : many   document        (via chat_document)
 msg             m : many   DocumentChunk   (via msg_chunk)     [optional]
 ```
 
-## Changes from original schema and why
+Unchanged from the original design — dropping Laravel doesn't change the
+data model, only who implements it. All rationale from the original
+revision (chunk-level granularity, removed `ChatLog`, explicit
+`chat_document` many-to-many, `document.status` for async tracking,
+`password_hash` naming, optional `msg_chunk` for citations) still applies
+as written.
 
-1. **`document 1:1 MSA_document` → `document 1:many DocumentChunk`**
-   Retrieval operates at chunk granularity (200–800 token windows), not whole-document granularity. A single embedding per document loses the precision retrieval depends on. `DocumentChunk.embedding` is a native `vector(N)` column via pgvector.
+## ORM / migrations — SQLAlchemy + Alembic (replaces Eloquent)
 
-2. **Removed `ChatLog`**
-   `user 1:1 ChatLog 1:many chat` was structurally identical to `user 1:many chat`, since `ChatLog` carried no attributes of its own. Collapsed to a direct FK. Reintroduce `ChatLog` only if it needs to hold something (e.g. per-user chat settings, archival state) — not just to sit between `user` and `chat`.
+```python
+# models.py
+class DocumentChunk(Base):
+    __tablename__ = "document_chunk"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("document.id"))
+    chunk_index: Mapped[int]
+    content: Mapped[str]
+    embedding = mapped_column(Vector(384))   # pgvector-sqlalchemy type
+    token_count: Mapped[int]
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON)
+```
 
-3. **Made `chat ↔ document` explicit as many-to-many**
-   Original schema implied this relation via `Chat.documents[]` but never declared cardinality. Added `chat_document` pivot table: a chat scopes which of the user's library documents are in context for that conversation.
+The `vector(N)` column still needs a raw migration statement — SQLAlchemy's
+`pgvector` integration (the `pgvector` Python package's SQLAlchemy type)
+handles the column type in the model, but enabling the extension is still
+explicit:
 
-4. **Added `document.status`**
-   Chunking/embedding is asynchronous. Without a status field there's no way to know if a document is queryable yet.
-
-5. **`password` → `password_hash`**
-   Explicit naming to avoid ambiguity — never store plaintext.
-
-6. **Added optional `msg_chunk` pivot**
-   Only needed if you want source citations in the UI (i.e. "this answer was generated from chunks X, Y, Z"). Skip if you don't need traceability.
+```python
+# alembic revision
+def upgrade():
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    op.create_table("document_chunk", ...)
+    op.execute(
+        "CREATE INDEX ON document_chunk USING hnsw (embedding vector_cosine_ops)"
+    )
+```
 
 ## pgvector implementation notes
 
-1. **Extension:** `CREATE EXTENSION IF NOT EXISTS vector;` — run once per database, before the first migration that creates `DocumentChunk`.
+1. **Extension:** `CREATE EXTENSION IF NOT EXISTS vector;` — run once per
+   database, in the first Alembic migration that creates `document_chunk`.
 
-2. **Dimension (`N`):** must match your embedding model exactly (e.g. 1536 for `text-embedding-3-small`, 3072 for `text-embedding-3-large`, 1024 for many open-source models). Fix this before writing migrations — changing it later means re-embedding everything and recreating the column.
+2. **Dimension (`N`):** must match your embedding model exactly — `384` for
+   `multilingual-e5-small`/`bge-small-en-v1.5`, `1536` for
+   `text-embedding-3-small`. Fix this before writing the migration —
+   changing it later means re-embedding everything and recreating the
+   column. This constraint is unchanged by the runtime consolidation.
 
 3. **Index type — pick one, not both:**
-   - `ivfflat` — faster to build, needs a `lists` parameter tuned to row count (`rows / 1000` as a starting point), and needs `ANALYZE` after bulk inserts or recall degrades.
-   - `hnsw` — better recall/latency at query time, slower to build, no row-count-dependent tuning parameter. Preferred if chunk count is expected to grow past ~100k and you don't want to re-tune periodically.
+   - `ivfflat` — faster to build, needs a `lists` parameter tuned to row
+     count, needs `ANALYZE` after bulk inserts.
+   - `hnsw` — better recall/latency at query time, no row-count-dependent
+     tuning. Preferred past ~100k chunks.
 
    ```sql
    CREATE INDEX ON document_chunk USING hnsw (embedding vector_cosine_ops);
    ```
 
-4. **Distance metric:** match the operator class to what your embedding model was optimized for — almost always cosine (`vector_cosine_ops`) for OpenAI/most sentence-transformer models. L2 (`vector_l2_ops`) is the alternative; don't mix metrics between index and query.
+4. **Distance metric:** cosine (`vector_cosine_ops`) — matches
+   `sentence-transformers` models. Don't mix metrics between index and
+   query.
 
-5. **Query pattern:**
+5. **Query pattern (now run in-process from the same route handler that
+   receives the chat message, not over HTTP to a second runtime):**
    ```sql
    SELECT id, content, embedding <=> :query_embedding AS distance
    FROM document_chunk
@@ -107,6 +143,11 @@ msg             m : many   DocumentChunk   (via msg_chunk)     [optional]
    ORDER BY distance
    LIMIT :k;
    ```
-   Filtering by `document_id` alongside the vector search is what makes the `chat_document` pivot functionally necessary, not just organizational — it scopes retrieval to the documents attached to that chat.
 
-6. **Failure mode to watch:** inserting a chunk without regenerating its embedding after an edit to `content` — nothing enforces that the vector matches the text. If chunk edits are ever allowed, re-embed on write, don't leave it implicit.
+6. **Failure mode to watch:** inserting a chunk without regenerating its
+   embedding after an edit to `content` — nothing enforces that the vector
+   matches the text. With the runtime boundary gone, this is even easier to
+   violate accidentally (any route handler *can* reach `document_chunk`
+   now, where before only FastAPI could reach it at all) — worth an
+   explicit code-review rule or a guard in the repository/service layer
+   that only the embed pipeline module is allowed to write that table.
