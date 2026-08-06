@@ -7,6 +7,11 @@ from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
+@router.get("/documents/{id}/{field}", status_code=status.HTTP_200_OK)
+async def get_document_field(id: int, field: str, service: serviceDep) -> dict[str, Any]:
+    value = await service.get_document_field(id, field)
+    return {field: value}
+
 
 @router.get("/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def get_documents(service: serviceDep, id: int | None = None) -> DocumentRead | None:

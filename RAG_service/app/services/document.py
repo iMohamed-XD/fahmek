@@ -1,5 +1,6 @@
 from typing import Any
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document
@@ -9,6 +10,23 @@ from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 class DocumentService:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def get_document_field(self, id: int, field: str) -> Any:
+        allowed_fields = set(DocumentRead.model_fields.keys())
+        if field not in allowed_fields:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Field '{field}' does not exist on Document",
+            )
+
+        document = await self.session.get(Document, id)
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Document with id {id} was not found.",
+            )
+
+        return getattr(document, field)
 
     async def create_document(self, data: DocumentCreate) -> Document:
         new_document = Document(**data.model_dump())
