@@ -17,7 +17,7 @@ class DocumentService:
         await self.session.refresh(new_document)
         return new_document
 
-    async def get_document(self, id: int) -> Document:
+    async def get_document(self, id: int) -> Document | None:
         # Logic to retrieve a document from the database
         return await self.session.get(Document, id)
 

@@ -5,10 +5,10 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.dependencies import serviceDep
 from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 
-router = APIRouter()
+router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
-@router.get("/documents/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@router.get("/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def get_documents(service: serviceDep, id: int | None = None) -> DocumentRead | None:
     document = await service.get_document(id)
     if document is None:
@@ -19,7 +19,7 @@ async def get_documents(service: serviceDep, id: int | None = None) -> DocumentR
     return DocumentRead.model_validate(document)
 
 
-@router.post("/documents", status_code=status.HTTP_201_CREATED)
+@router.post("/", status_code=status.HTTP_201_CREATED)
 async def add_document(data: DocumentCreate, service: serviceDep) -> dict[str, Any]:
     new_document = await service.create_document(data)
     return {
@@ -28,7 +28,7 @@ async def add_document(data: DocumentCreate, service: serviceDep) -> dict[str, A
     }
 
 
-@router.put("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@router.put("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def edit_document(
     id: int, data: DocumentUpdate, service: serviceDep
 ) -> DocumentRead | None:
@@ -41,7 +41,7 @@ async def edit_document(
     return DocumentRead.model_validate(new_document)
 
 
-@router.patch("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@router.patch("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def patch_document(
     id: int, data: DocumentUpdate, service: serviceDep
 ) -> DocumentRead | None:
@@ -54,7 +54,7 @@ async def patch_document(
     return DocumentRead.model_validate(new_document)
 
 
-@router.delete("/documents/{id}", status_code=status.HTTP_200_OK)
+@router.delete("/{id}", status_code=status.HTTP_200_OK)
 async def delete_document(id: int, service: serviceDep) -> dict[str, Any]:
     result = await service.delete_document(id)
     if "was not found." in result["details"]:
