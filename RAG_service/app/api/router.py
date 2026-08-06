@@ -59,7 +59,7 @@ async def patch_document(
 
 
 @router.delete("/documents/{id}", status_code=status.HTTP_200_OK)
-async def delete_document(id: int, session: sessionDep) -> dict[str, str]:
+async def delete_document(id: int, session: sessionDep) -> dict[str, Any]:
     service = DocumentService(session)
     result = await service.delete_document(id)
     if "was not found." in result["details"]:
