@@ -75,7 +75,7 @@ def add_document(data: DocumentCreate, session: sessionDep) -> dict[str, Any]:
 
 @app.put("/documents", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 def edit_document(
-    id: int, data: DocumentRead, session: sessionDep
+    id: int, data: DocumentUpdate, session: sessionDep
 ) -> DocumentRead | None:
     new_document = session.get(Document, id)
     if new_document is None:
@@ -83,8 +83,7 @@ def edit_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Given id = {id} is not found in our DataBase!!!",
         )
-    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True))
-    session.add(new_document)
+    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True, exclude={"id"}))
     session.commit()
     session.refresh(new_document)
     return DocumentRead.model_validate(new_document)
@@ -100,10 +99,9 @@ def patch_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Given id = {id} is not found in our DataBase!!!",
         )
-    session.add(new_document)
+    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True, exclude={"id"}))
     session.commit()
     session.refresh(new_document)
-    new_document.sqlmodel_update(data.model_dump(exclude_unset=True, exclude_none=True))
     return DocumentRead.model_validate(new_document)
 
 

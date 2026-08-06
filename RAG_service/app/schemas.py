@@ -48,9 +48,5 @@ class DocumentUpdate(BaseModel):
         ge=1,
         le=150
     )
-    uploaded_at: str | None = Field(
-        default=None,
-        min_length=8,
-        max_length=50
-    )
+    uploaded_at: datetime | None = None
     type: DocumentType | None = None
