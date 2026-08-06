@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
-app.include_router(router, prefix="/api/v1")
+app.include_router(router)
 
 
 # def check_field(field: str):
