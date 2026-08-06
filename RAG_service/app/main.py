@@ -20,11 +20,11 @@ async def lifespan(app: FastAPI):
     # global db
     # db = DataBase()
     # db.init_db()
-    create_db()
+    await create_db()
     yield
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 app.include_router(router, prefix="/api/v1")
 
 

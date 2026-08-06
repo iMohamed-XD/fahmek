@@ -9,7 +9,7 @@ from sqlmodel import SQLModel
 from app.config import settings
 
 engine = create_async_engine(
-    url=settings.POSTGRES_SERVER,
+    url=settings.DATABASE_URL,
     echo=True,
     connect_args={
         "check_same_thread": False,
