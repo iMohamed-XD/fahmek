@@ -1,11 +1,12 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
+from sqlmodel import Field, SQLModel
 
 from app.db.models import DocumentType
 
 
-class DocumentBase(BaseModel):
+class DocumentBase(SQLModel):
     name: str = Field(
         max_length=100,
         description="Name of said document, e.g. hello"
@@ -28,8 +29,13 @@ class DocumentCreate(DocumentBase):
     pass
 
 
-class DocumentRead(DocumentBase):
-    id: int
+class Document(DocumentBase, table=True):
+    __tablename__ = "documents"
+    id: int = Field(
+        default=None,
+        description="id of said document, e.g. 1",
+        primary_key=True,
+    )
 
 
 class DocumentUpdate(BaseModel):
