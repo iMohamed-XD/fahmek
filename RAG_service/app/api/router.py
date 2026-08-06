@@ -8,10 +8,6 @@ from app.services.document import DocumentService
 
 router = APIRouter()
 
-@router.get('/health', status_code=status.HTTP_200_OK)
-def health():
-    return {"status": "ok"}
-
 @router.get("/documents/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def get_documents(session: sessionDep, id: int) -> DocumentRead | None:
     service = DocumentService(session)

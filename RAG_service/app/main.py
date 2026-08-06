@@ -47,6 +47,9 @@ app.include_router(router)
 #     check_id_in_DB(id=id)
 #     document: DocumentRead | None = db.read_document(id=id)
 #     return {field: getattr(document, field)}
+@app.get('/health')
+def health():
+    return {"status": "ok"}
 
 @app.get("/scalar", include_in_schema=False)
 async def get_scalar_docs():
