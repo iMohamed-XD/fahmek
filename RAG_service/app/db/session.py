@@ -1,4 +1,3 @@
-
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
@@ -11,13 +10,11 @@ from app.config import settings
 engine = create_async_engine(
     url=settings.DATABASE_URL,
     echo=True,
-    connect_args={
-        "check_same_thread": False,
-    }
 )
+
 async def create_db():
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all(bind=engine))
+        await conn.run_sync(SQLModel.metadata.create_all)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
