@@ -1,16 +1,12 @@
 from contextlib import asynccontextmanager
-from typing import Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI
 from scalar_fastapi import get_scalar_api_reference
 
-from app.config import settings
-
-# from app.db.database import DataBase
-from app.db.models import Document
-from app.db.session import create_db, sessionDep
-from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from app.api.router import router
+from app.config import settings
+from app.db.session import create_db
+
 # db: DataBase
 
 
