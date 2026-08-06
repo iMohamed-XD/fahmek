@@ -29,7 +29,7 @@ class DocumentCreate(DocumentBase):
     pass
 
 
-class Document(DocumentBase, table=True):
+class DocumentRead(DocumentBase):
     __tablename__ = "documents"
     id: int = Field(
         default=None,
