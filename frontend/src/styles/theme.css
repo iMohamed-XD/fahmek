@@ -1,0 +1,10 @@
+/* styles/theme.css, imported from index.css */
+:root {
+  --color-green-50: #F5F9EE;
+  --color-green-200: #C0DD97;
+  --color-green-800: #27500A;
+  --color-gold-400: #EF9F27;
+  --color-status-success: #639922;
+  --color-status-danger: #C1443A;
+  /* ...full ramp from fahemak_design_system.md */
+}
