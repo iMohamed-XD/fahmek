@@ -1,6 +1,7 @@
 import sqlite3
-from typing import Any, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
 
 from app.schemas import DocumentRead, DocumentType
 

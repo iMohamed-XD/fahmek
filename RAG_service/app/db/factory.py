@@ -1,5 +1,7 @@
-import factory
 from datetime import datetime
+
+import factory
+
 from app.schemas import DocumentType
 
 

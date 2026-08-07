@@ -1,13 +1,12 @@
 from typing import Any
 
+from app.api.Documents.dependencies import serviceDep
 from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from fastapi import APIRouter, HTTPException, status
 
-from RAG_service.app.api.Documents.dependencies import serviceDep
-
 DocumentRouter = APIRouter(prefix="/documents", tags=["Documents"])
 
-@DocumentRouter.get("/documents/{id}/{field}", status_code=status.HTTP_200_OK)
+@DocumentRouter.get("/{id}/{field}", status_code=status.HTTP_200_OK)
 async def get_document_field(id: int, field: str, service: serviceDep) -> dict[str, Any]:
     value = await service.get_document_field(id, field)
     return {field: value}

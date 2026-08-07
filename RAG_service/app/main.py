@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from scalar_fastapi import get_scalar_api_reference
 
-from RAG_service.app.api.Documents.documentRouter import DocumentRouter
+from app.api.Documents.documentRouter import DocumentRouter
 from app.config import settings
 from app.db.session import create_db
 

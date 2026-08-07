@@ -30,6 +30,9 @@ class DocumentRead(BaseModel):
     status: DocumentStatus
     user_id: int
 
+class DocumentUpdate(BaseModel):
+    name: str | None = None
+    status: DocumentStatus | None = None
 
 class MsgCreate(BaseModel):
     content: str
