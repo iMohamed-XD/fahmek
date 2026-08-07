@@ -88,14 +88,18 @@ class Msg(Base):
     date: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     chat: Mapped["Chat"] = relationship(back_populates="msgs")
-    source_chunks: Mapped[list["DocumentChunk"]] = relationship(secondary="msg_chunk")
+    
+    # Relationship to the association table
+    msg_chunks: Mapped[list["MsgChunk"]] = relationship(back_populates="msg", cascade="all, delete-orphan")
 
 
-# msg_chunk — has an extra column (similarity_score) -> needs to be a real mapped class,
-# not a plain Table, since a bare secondary= table can't carry association data cleanly
 class MsgChunk(Base):
     __tablename__ = "msg_chunk"
 
     msg_id: Mapped[int] = mapped_column(ForeignKey("msg.id"), primary_key=True)
     chunk_id: Mapped[int] = mapped_column(ForeignKey("document_chunk.id"), primary_key=True)
     similarity_score: Mapped[float]
+
+    # Relationships back to parents
+    msg: Mapped["Msg"] = relationship(back_populates="msg_chunks")
+    chunk: Mapped["DocumentChunk"] = relationship()
