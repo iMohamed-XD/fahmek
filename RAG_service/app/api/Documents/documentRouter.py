@@ -1,19 +1,19 @@
 from typing import Any
 
+from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.dependencies import serviceDep
-from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
+from RAG_service.app.api.Documents.dependencies import serviceDep
 
-router = APIRouter(prefix="/documents", tags=["Documents"])
+DocumentRouter = APIRouter(prefix="/documents", tags=["Documents"])
 
-@router.get("/documents/{id}/{field}", status_code=status.HTTP_200_OK)
+@DocumentRouter.get("/documents/{id}/{field}", status_code=status.HTTP_200_OK)
 async def get_document_field(id: int, field: str, service: serviceDep) -> dict[str, Any]:
     value = await service.get_document_field(id, field)
     return {field: value}
 
 
-@router.get("/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@DocumentRouter.get("/{id}", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def get_documents(service: serviceDep, id: int | None = None) -> DocumentRead | None:
     document = await service.get_document(id)
     if document is None:
@@ -24,7 +24,7 @@ async def get_documents(service: serviceDep, id: int | None = None) -> DocumentR
     return DocumentRead.model_validate(document)
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@DocumentRouter.post("/", status_code=status.HTTP_201_CREATED)
 async def add_document(data: DocumentCreate, service: serviceDep) -> dict[str, Any]:
     new_document = await service.create_document(data)
     return {
@@ -33,7 +33,7 @@ async def add_document(data: DocumentCreate, service: serviceDep) -> dict[str, A
     }
 
 
-@router.put("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@DocumentRouter.put("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def edit_document(
     id: int, data: DocumentUpdate, service: serviceDep
 ) -> DocumentRead | None:
@@ -46,7 +46,7 @@ async def edit_document(
     return DocumentRead.model_validate(new_document)
 
 
-@router.patch("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
+@DocumentRouter.patch("/", status_code=status.HTTP_200_OK, response_model=DocumentRead)
 async def patch_document(
     id: int, data: DocumentUpdate, service: serviceDep
 ) -> DocumentRead | None:
@@ -59,7 +59,7 @@ async def patch_document(
     return DocumentRead.model_validate(new_document)
 
 
-@router.delete("/{id}", status_code=status.HTTP_200_OK)
+@DocumentRouter.delete("/{id}", status_code=status.HTTP_200_OK)
 async def delete_document(id: int, service: serviceDep) -> dict[str, Any]:
     result = await service.delete_document(id)
     if "was not found." in result["details"]:

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from scalar_fastapi import get_scalar_api_reference
 
-from app.api.router import router
+from RAG_service.app.api.Documents.documentRouter import DocumentRouter
 from app.config import settings
 from app.db.session import create_db
 
@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
-app.include_router(router)
+app.include_router(DocumentRouter)
 
 
 # def check_field(field: str):

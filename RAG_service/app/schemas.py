@@ -1,52 +1,44 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
-from sqlmodel import Field, SQLModel
+from pydantic import BaseModel, ConfigDict, EmailStr
 
-from app.db.models import DocumentType
+from app.db.models import DocumentStatus
 
 
-class DocumentBase(SQLModel):
-    name: str = Field(
-        max_length=100,
-        description="Name of said document, e.g. hello"
-    )
-    size: int = Field(
-        le=150,
-        ge=1,
-        description="size in bytes of said document, e.g. 78"
-    )
-    uploaded_at: datetime 
-    type: DocumentType = Field(
-        description="type of said document, e.g. pdf"
-    )
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str  # plaintext in, hashed before it ever reaches the model
 
+
+class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    email: EmailStr
 
 
-
-class DocumentCreate(DocumentBase):
-    pass
-
-
-class DocumentRead(DocumentBase):
-    __tablename__ = "documents"
-    id: int = Field(
-        default=None,
-        description="id of said document, e.g. 1",
-        primary_key=True,
-    )
+class DocumentCreate(BaseModel):
+    name: str
+    # path/status/user_id are server-assigned, never client-supplied — kept off this schema
 
 
-class DocumentUpdate(BaseModel):
-    name: str | None = Field(
-        default=None,
-        max_length=100
-    )
-    size: int | None = Field(
-        default=None,
-        ge=1,
-        le=150
-    )
-    uploaded_at: datetime | None = None
-    type: DocumentType | None = None
+class DocumentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    status: DocumentStatus
+    user_id: int
+
+
+class MsgCreate(BaseModel):
+    content: str
+
+
+class MsgRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    chat_id: int
+    sender: str
+    content: str
+    date: date
