@@ -2,7 +2,12 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import Depends
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlmodel import SQLModel
 
 from app.config import settings
@@ -15,6 +20,10 @@ engine = create_async_engine(
 
 async def create_db():
     async with engine.begin() as conn:
+        # 1. Enable pgvector extension first
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        
+        # 2. Now create the tables
         await conn.run_sync(Base.metadata.create_all)
 
 

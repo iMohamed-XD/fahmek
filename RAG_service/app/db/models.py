@@ -85,7 +85,7 @@ class Msg(Base):
     chat_id: Mapped[int] = mapped_column(ForeignKey("chat.id"))
     sender: Mapped[str]  # 'user' | 'assistant'
     content: Mapped[str]
-    date: Mapped[date] = mapped_column(default=datetime.utcnow)
+    date: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     chat: Mapped["Chat"] = relationship(back_populates="msgs")
     source_chunks: Mapped[list["DocumentChunk"]] = relationship(secondary="msg_chunk")
