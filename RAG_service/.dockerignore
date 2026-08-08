@@ -1,0 +1,29 @@
+# Local virtualenv / caches — rebuilt fresh inside the image
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Secrets — never bake these into an image layer
+.env
+.env.*
+!*.env.example
+
+# Legacy / disconnected artifacts not part of the containerized service
+sqlite.db
+data/chroma_db
+RAG.py
+scripts
+
+# VCS and editor noise
+.git
+.gitignore
+.vscode
+.idea
+
+# Anything from the sibling frontend project, in case the build
+# context is ever pointed at the repo root instead of RAG_service/
+../frontend

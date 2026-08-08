@@ -2,3 +2,4 @@
 **/venv/
 **/.venv/
 sqlite.db
+RAG_service/RAG.py
