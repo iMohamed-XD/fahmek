@@ -24,7 +24,7 @@ async def create_db():
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         
         # 2. Now create the tables
-        await conn.run_sync(Base.metadata.create_all)
+        # await conn.run_sync(Base.metadata.create_all)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

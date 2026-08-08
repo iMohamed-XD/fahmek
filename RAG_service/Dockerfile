@@ -36,6 +36,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Now bring in the actual application source and finish the sync
 # (installs the project itself into the same venv).
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen
 
@@ -56,6 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/app /app/app
+COPY --from=builder /app/alembic /app/alembic
+COPY --from=builder /app/alembic.ini /app/alembic.ini
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
