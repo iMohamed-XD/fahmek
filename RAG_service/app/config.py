@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     APP_NAME: str 
     APP_HOST: str 
     APP_PORT: int
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
     model_config = SettingsConfigDict(
         env_file="./.env", 
         env_file_encoding="utf-8",

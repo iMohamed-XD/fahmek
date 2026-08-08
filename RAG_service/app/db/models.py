@@ -25,6 +25,7 @@ class User(Base):
     name: Mapped[str]
     email: Mapped[str] = mapped_column(unique=True, index=True)
     password_hash: Mapped[str]
+    token_version: Mapped[int] = mapped_column(default=0)
 
     documents: Mapped[list["Document"]] = relationship(back_populates="user")
     chats: Mapped[list["Chat"]] = relationship(back_populates="user")

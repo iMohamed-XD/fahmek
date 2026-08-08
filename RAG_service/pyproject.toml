@@ -51,7 +51,11 @@ dev = [
     "faker>=40.36.0",
     "pytest>=8.0.0",
     "httpx>=0.28.1",
+    "pytest-asyncio>=0.24.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.uv]
 package = false

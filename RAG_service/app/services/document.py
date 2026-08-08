@@ -28,8 +28,8 @@ class DocumentService:
 
         return getattr(document, field)
 
-    async def create_document(self, data: DocumentCreate) -> Document:
-        new_document = Document(**data.model_dump())
+    async def create_document(self, data: DocumentCreate, *, user_id: int, path: str) -> Document:
+        new_document = Document(**data.model_dump(), user_id=user_id, path=path)
         self.session.add(new_document)
         await self.session.commit()
         await self.session.refresh(new_document)

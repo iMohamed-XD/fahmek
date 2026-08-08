@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from scalar_fastapi import get_scalar_api_reference
 
 from app.api.Documents.documentRouter import DocumentRouter
+from app.api.Users.userRouter import UserRouter
 from app.config import settings
 from app.db.session import create_db
 
@@ -22,7 +23,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 app.include_router(DocumentRouter)
-
+app.include_router(UserRouter)
 
 # def check_field(field: str):
 #     allowed_fields = set(DocumentRead.model_fields.keys())
