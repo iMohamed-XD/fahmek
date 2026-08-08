@@ -81,7 +81,6 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['msg_id'], ['msg.id'], ),
     sa.PrimaryKeyConstraint('msg_id', 'chunk_id')
     )
-    op.drop_table('documents')
     # ### end Alembic commands ###
 
 
