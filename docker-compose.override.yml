@@ -1,0 +1,6 @@
+# docker-compose.override.yml
+services:
+  backend:
+    volumes:
+      - ./RAG_service/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8000} --reload

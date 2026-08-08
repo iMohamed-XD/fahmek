@@ -30,12 +30,14 @@ ENV UV_LINK_MODE=copy \
 # invalidates when pyproject.toml/uv.lock change, not on every
 # source edit -> dependency install is cached across code changes.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
 
 # Now bring in the actual application source and finish the sync
 # (installs the project itself into the same venv).
 COPY app ./app
-RUN uv sync --frozen
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 # =========================================================
 # Stage 2: runtime
